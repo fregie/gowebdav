@@ -9,9 +9,10 @@ import (
 	"strings"
 )
 
-func (c *Client) req(method, path string, body io.Reader, intercept func(*http.Request)) (req *http.Response, err error) {
+func (c *Client) req(method, path string, body io.Reader, size int64, intercept func(*http.Request)) (req *http.Response, err error) {
 	var r *http.Request
 	var retryBuf io.Reader
+	canRetry := true
 
 	if body != nil {
 		// If the authorization fails, we will need to restart reading
@@ -25,6 +26,8 @@ func (c *Client) req(method, path string, body io.Reader, intercept func(*http.R
 				return
 			}
 			retryBuf = body
+		} else if method == http.MethodPut {
+			canRetry = false
 		} else {
 			buff := &bytes.Buffer{}
 			retryBuf = buff
@@ -37,6 +40,9 @@ func (c *Client) req(method, path string, body io.Reader, intercept func(*http.R
 
 	if err != nil {
 		return nil, err
+	}
+	if size > 0 {
+		r.ContentLength = size
 	}
 
 	for k, vals := range c.headers {
@@ -83,7 +89,9 @@ func (c *Client) req(method, path string, body io.Reader, intercept func(*http.R
 
 		// retryBuf will be nil if body was nil initially so no check
 		// for body == nil is required here.
-		return c.req(method, path, retryBuf, intercept)
+		if canRetry {
+			return c.req(method, path, retryBuf, size, intercept)
+		}
 	} else if rs.StatusCode == 401 {
 		return rs, newPathError("Authorize", c.root, rs.StatusCode)
 	}
@@ -92,7 +100,7 @@ func (c *Client) req(method, path string, body io.Reader, intercept func(*http.R
 }
 
 func (c *Client) mkcol(path string) (status int, err error) {
-	rs, err := c.req("MKCOL", path, nil, nil)
+	rs, err := c.req("MKCOL", path, nil, 0, nil)
 	if err != nil {
 		return
 	}
@@ -107,13 +115,13 @@ func (c *Client) mkcol(path string) (status int, err error) {
 }
 
 func (c *Client) options(path string) (*http.Response, error) {
-	return c.req("OPTIONS", path, nil, func(rq *http.Request) {
+	return c.req("OPTIONS", path, nil, 0, func(rq *http.Request) {
 		rq.Header.Add("Depth", "0")
 	})
 }
 
 func (c *Client) propfind(path string, self bool, body string, resp interface{}, parse func(resp interface{}) error) error {
-	rs, err := c.req("PROPFIND", path, strings.NewReader(body), func(rq *http.Request) {
+	rs, err := c.req("PROPFIND", path, strings.NewReader(body), 0, func(rq *http.Request) {
 		if self {
 			rq.Header.Add("Depth", "0")
 		} else {
@@ -147,7 +155,7 @@ func (c *Client) doCopyMove(
 	r io.ReadCloser,
 	err error,
 ) {
-	rs, err := c.req(method, oldpath, nil, func(rq *http.Request) {
+	rs, err := c.req(method, oldpath, nil, 0, func(rq *http.Request) {
 		rq.Header.Add("Destination", PathEscape(Join(c.root, newpath)))
 		if overwrite {
 			rq.Header.Add("Overwrite", "T")
@@ -192,12 +200,16 @@ func (c *Client) copymove(method string, oldpath string, newpath string, overwri
 	return newPathError(method, oldpath, s)
 }
 
-func (c *Client) put(path string, stream io.Reader) (status int, err error) {
-	rs, err := c.req("PUT", path, stream, nil)
+func (c *Client) put(path string, stream io.Reader, size int64) (status int, body []byte, err error) {
+	rs, err := c.req("PUT", path, stream, size, nil)
 	if err != nil {
 		return
 	}
 	defer rs.Body.Close()
+	body, err = io.ReadAll(rs.Body)
+	if err != nil {
+		return
+	}
 
 	status = rs.StatusCode
 	return

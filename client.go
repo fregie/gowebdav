@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -257,9 +258,13 @@ func (c *Client) Remove(path string) error {
 
 // RemoveAll removes remote files
 func (c *Client) RemoveAll(path string) error {
-	rs, err := c.req("DELETE", path, nil, nil)
+	rs, err := c.req("DELETE", path, nil, 0, nil)
 	if err != nil {
 		return newPathError("Remove", path, 400)
+	}
+	body, err := ioutil.ReadAll(rs.Body)
+	if err != nil {
+		return err
 	}
 	err = rs.Body.Close()
 	if err != nil {
@@ -270,7 +275,8 @@ func (c *Client) RemoveAll(path string) error {
 		return nil
 	}
 
-	return newPathError("Remove", path, rs.StatusCode)
+	// return newPathError("Remove", path, rs.StatusCode)
+	return fmt.Errorf("Remove %s: %s", path, body)
 }
 
 // Mkdir makes a directory
@@ -349,7 +355,7 @@ func (c *Client) Read(path string) ([]byte, error) {
 
 // ReadStream reads the stream for a given path
 func (c *Client) ReadStream(path string) (io.ReadCloser, error) {
-	rs, err := c.req("GET", path, nil, nil)
+	rs, err := c.req("GET", path, nil, 0, nil)
 	if err != nil {
 		return nil, newPathErrorErr("ReadStream", path, err)
 	}
@@ -357,9 +363,14 @@ func (c *Client) ReadStream(path string) (io.ReadCloser, error) {
 	if rs.StatusCode == 200 {
 		return rs.Body, nil
 	}
+	body, err := ioutil.ReadAll(rs.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	rs.Body.Close()
-	return nil, newPathError("ReadStream", path, rs.StatusCode)
+	// return nil, newPathError("ReadStream", path, rs.StatusCode)
+	return nil, fmt.Errorf("ReadStream %s: %s", path, body)
 }
 
 // ReadStreamRange reads the stream representing a subset of bytes for a given path,
@@ -371,7 +382,7 @@ func (c *Client) ReadStream(path string) (io.ReadCloser, error) {
 // this function will emulate the behavior by skipping `offset` bytes and limiting the result
 // to `length`.
 func (c *Client) ReadStreamRange(path string, offset, length int64) (io.ReadCloser, error) {
-	rs, err := c.req("GET", path, nil, func(r *http.Request) {
+	rs, err := c.req("GET", path, nil, 0, func(r *http.Request) {
 		if length > 0 {
 			r.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
 		} else {
@@ -398,14 +409,19 @@ func (c *Client) ReadStreamRange(path string, offset, length int64) (io.ReadClos
 		// return a io.ReadCloser that is limited to `length` bytes.
 		return &limitedReadCloser{rs.Body, int(length)}, nil
 	}
+	body, err := ioutil.ReadAll(rs.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	rs.Body.Close()
-	return nil, newPathError("ReadStream", path, rs.StatusCode)
+	// return nil, newPathError("ReadStream", path, rs.StatusCode)
+	return nil, fmt.Errorf("ReadStreamRange %s: %s", path, body)
 }
 
 // Write writes data to a given path
 func (c *Client) Write(path string, data []byte, _ os.FileMode) (err error) {
-	s, err := c.put(path, bytes.NewReader(data))
+	s, _, err := c.put(path, bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return
 	}
@@ -421,7 +437,7 @@ func (c *Client) Write(path string, data []byte, _ os.FileMode) (err error) {
 			return
 		}
 
-		s, err = c.put(path, bytes.NewReader(data))
+		s, _, err = c.put(path, bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			return
 		}
@@ -434,14 +450,14 @@ func (c *Client) Write(path string, data []byte, _ os.FileMode) (err error) {
 }
 
 // WriteStream writes a stream
-func (c *Client) WriteStream(path string, stream io.Reader, _ os.FileMode) (err error) {
+func (c *Client) WriteStream(path string, stream io.Reader, size int64, _ os.FileMode) (err error) {
 
 	err = c.createParentCollection(path)
 	if err != nil {
 		return err
 	}
 
-	s, err := c.put(path, stream)
+	s, body, err := c.put(path, stream, size)
 	if err != nil {
 		return err
 	}
@@ -451,6 +467,6 @@ func (c *Client) WriteStream(path string, stream io.Reader, _ os.FileMode) (err 
 		return nil
 
 	default:
-		return newPathError("WriteStream", path, s)
+		return fmt.Errorf("WriteStream %s: %s", path, string(body))
 	}
 }
